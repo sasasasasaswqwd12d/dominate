@@ -707,42 +707,77 @@ async def команда_предупреждение(interaction: discord.Inter
 # === /заявка_на_хайранга ===
 APPLICATION_CHANNEL_ID = 1450511499704668170  # Канал для заявок на хайранг
 
+# === /заявка_на_хайранга (с модальным окном и валидацией) ===
 @bot.tree.command(name="заявка_на_хайранга", description="Подать заявку на повышение до High Rank")
-@app_commands.describe(
-    nick="Ваш ник (можно указать IRL)",
-    static="Ваш Static ID",
-    current_rank="Ваш текущий ранг",
-    position="На какую должность претендуете?"
-)
-async def команда_заявка_на_хайранга(
-    interaction: discord.Interaction,
-    nick: str,
-    static: str,
-    current_rank: str,
-    position: str
-):
-    await interaction.response.send_message(
-        f"✅ Вы успешно подали заявку на должность **{position}**.",
-        ephemeral=True
+async def команда_заявка_на_хайранга(interaction: discord.Interaction):
+    await interaction.response.send_modal(HighRankApplicationModal())
+
+class HighRankApplicationModal(ui.Modal, title="Заявка на повышение"):
+    nick = ui.TextInput(
+        label="Ваш ник",
+        style=discord.TextStyle.short,
+        required=True,
+        max_length=50
+    )
+    static = ui.TextInput(
+        label="Ваш Static ID",
+        style=discord.TextStyle.short,
+        required=True,
+        max_length=20
+    )
+    current_rank = ui.TextInput(
+        label="Ваш текущий ранг",
+        style=discord.TextStyle.short,
+        required=True,
+        max_length=30
+    )
+    position = ui.TextInput(
+        label="На какую должность хотите?",
+        placeholder="Recruit / High Rank / Dep Leader",
+        style=discord.TextStyle.short,
+        required=True,
+        max_length=30
     )
 
-    embed = Embed(
-        title="📄 Заявка на High Rank",
-        color=0x00bfff,
-        timestamp=datetime.datetime.utcnow()
-    )
-    embed.add_field(name="Ник", value=nick, inline=False)
-    embed.add_field(name="Static ID", value=static, inline=False)
-    embed.add_field(name="Текущий ранг", value=current_rank, inline=False)
-    embed.add_field(name="Должность", value=position, inline=False)
-    embed.add_field(name="Discord ID", value=str(interaction.user.id), inline=False)
-    embed.add_field(name="Пинг", value=interaction.user.mention, inline=False)
+    async def on_submit(self, interaction: discord.Interaction):
+        allowed_positions = {"recruit", "high rank", "dep leader"}
+        pos_lower = self.position.value.strip().lower()
 
-    app_channel = bot.get_channel(APPLICATION_CHANNEL_ID)
-    if app_channel:
-        await app_channel.send(embed=embed, view=HighRankApplicationView(interaction.user, position))
-    else:
-        print(f"⚠️ Канал заявок {APPLICATION_CHANNEL_ID} не найден!")
+        if pos_lower not in allowed_positions:
+            await interaction.response.send_message(
+                "❌ Недопустимая должность.\n"
+                "Выберите одну из: **Recruit**, **High Rank**, **Dep Leader**.",
+                ephemeral=True
+            )
+            return
+
+        # Отправка подтверждения пользователю
+        await interaction.response.send_message(
+            f"✅ Вы успешно подали заявку на должность **{self.position.value}**.",
+            ephemeral=True
+        )
+
+        # Создание embed для канала заявок
+        embed = Embed(
+            title="📄 Заявка на High Rank",
+            color=0x00bfff,
+            timestamp=datetime.datetime.utcnow()
+        )
+        embed.add_field(name="Ник", value=self.nick.value, inline=False)
+        embed.add_field(name="Static ID", value=self.static.value, inline=False)
+        embed.add_field(name="Текущий ранг", value=self.current_rank.value, inline=False)
+        embed.add_field(name="Должность", value=self.position.value, inline=False)
+        embed.add_field(name="Discord ID", value=str(interaction.user.id), inline=False)
+        embed.add_field(name="Пинг", value=interaction.user.mention, inline=False)
+
+        app_channel = bot.get_channel(APPLICATION_CHANNEL_ID)
+        if app_channel:
+            await app_channel.send(
+                embed=embed,
+                view=HighRankApplicationView(interaction.user, self.position.value)
+            )
+        else:
+            print(f"⚠️ Канал заявок {APPLICATION_CHANNEL_ID} не найден!")
 
 class HighRankApplicationView(ui.View):
     def __init__(self, applicant: discord.Member, position: str):
