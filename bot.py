@@ -650,6 +650,7 @@ async def команда_инструкция(interaction: discord.Interaction):
             "/повышение /понижение — управление рангами\n"
             "/история @user — посмотреть историю\n"
             "/состав_фамы — список участников с онлайн-статусом\n"
+            "/заявка_на_хайранга - подача заявления на recruit/high rang/dep leader\n"
             "/предупреждение @user причина — выдать предупреждение (3 = увольнение)\n\n"
             "Все действия логируются."
         ),
@@ -702,6 +703,192 @@ async def команда_предупреждение(interaction: discord.Inter
         add_to_history(member.id, "Автоматическое увольнение (3 предупреждения)")
         del WARNINGS[user_id]
         save_data()
+
+# === /заявка_на_хайранга ===
+APPLICATION_CHANNEL_ID = 1450511499704668170  # Канал для заявок на хайранг
+
+@bot.tree.command(name="заявка_на_хайранга", description="Подать заявку на повышение до High Rank")
+@app_commands.describe(
+    nick="Ваш ник (можно указать IRL)",
+    static="Ваш Static ID",
+    current_rank="Ваш текущий ранг",
+    position="На какую должность претендуете?"
+)
+async def команда_заявка_на_хайранга(
+    interaction: discord.Interaction,
+    nick: str,
+    static: str,
+    current_rank: str,
+    position: str
+):
+    await interaction.response.send_message(
+        f"✅ Вы успешно подали заявку на должность **{position}**.",
+        ephemeral=True
+    )
+
+    embed = Embed(
+        title="📄 Заявка на High Rank",
+        color=0x00bfff,
+        timestamp=datetime.datetime.utcnow()
+    )
+    embed.add_field(name="Ник", value=nick, inline=False)
+    embed.add_field(name="Static ID", value=static, inline=False)
+    embed.add_field(name="Текущий ранг", value=current_rank, inline=False)
+    embed.add_field(name="Должность", value=position, inline=False)
+    embed.add_field(name="Discord ID", value=str(interaction.user.id), inline=False)
+    embed.add_field(name="Пинг", value=interaction.user.mention, inline=False)
+
+    app_channel = bot.get_channel(APPLICATION_CHANNEL_ID)
+    if app_channel:
+        await app_channel.send(embed=embed, view=HighRankApplicationView(interaction.user, position))
+    else:
+        print(f"⚠️ Канал заявок {APPLICATION_CHANNEL_ID} не найден!")
+
+class HighRankApplicationView(ui.View):
+    def __init__(self, applicant: discord.Member, position: str):
+        super().__init__(timeout=None)
+        self.applicant = applicant
+        self.position = position
+
+    @ui.button(label="Вызвать на обзвон", style=ButtonStyle.blurple, emoji="📞")
+    async def call_for_interview(self, inter: discord.Interaction, button: ui.Button):
+        if not has_required_role(inter.user, [ROLES_RANKS[r] for r in AUTHORIZED_RANKS]):
+            await inter.response.send_message("❌ У вас нет прав для этого действия.", ephemeral=True)
+            return
+
+        voice = inter.guild.get_channel(VOICE_CHANNEL_ID)
+        mention = voice.mention if voice else f"<#{VOICE_CHANNEL_ID}>"
+
+        try:
+            await self.applicant.send(
+                f"🔔 Вы вызваны на обзвон по заявке на **{self.position}** в **Dominate FamQ**!\n"
+                f"Присоединяйтесь к голосовому каналу: {mention}"
+            )
+            msg = "✅ Кандидату отправлено уведомление об обзвоне."
+        except discord.Forbidden:
+            msg = "⚠️ Не удалось отправить ЛС (закрыты приватные сообщения)."
+
+        await inter.response.send_message(msg, ephemeral=True)
+        new_view = HighRankDecisionView(self.applicant, self.position)
+        await inter.message.edit(view=new_view)
+
+    @ui.button(label="Одобрить", style=ButtonStyle.green, emoji="✅")
+    async def approve(self, inter: discord.Interaction, button: ui.Button):
+        if not has_required_role(inter.user, [ROLES_RANKS[r] for r in AUTHORIZED_RANKS]):
+            await inter.response.send_message("❌ У вас нет прав для этого действия.", ephemeral=True)
+            return
+
+        embed = inter.message.embeds[0]
+        embed.color = 0x00ff00
+        embed.set_footer(text=f"Одобрено: {inter.user} ({inter.user.id})")
+        for item in self.children:
+            item.disabled = True
+        await inter.response.edit_message(embed=embed, view=self)
+
+        log_embed = Embed(
+            title="✅ Заявка на High Rank — ОДОБРЕНА",
+            color=0x00ff00,
+            timestamp=datetime.datetime.utcnow()
+        )
+        log_embed.add_field(name="Кто одобрил", value=f"{inter.user.mention} | {inter.user.id}", inline=False)
+        log_embed.add_field(name="Кому одобрено", value=f"{self.applicant.mention} | {self.applicant.id}", inline=False)
+        log_embed.add_field(name="Должность", value=self.position, inline=False)
+        await send_log(log_embed)
+
+        try:
+            await self.applicant.send(f"✅ Ваша заявка на **{self.position}** одобрена!")
+        except:
+            pass
+
+    @ui.button(label="Отказать", style=ButtonStyle.red, emoji="❌")
+    async def deny(self, inter: discord.Interaction, button: ui.Button):
+        if not has_required_role(inter.user, [ROLES_RANKS[r] for r in AUTHORIZED_RANKS]):
+            await inter.response.send_message("❌ У вас нет прав для этого действия.", ephemeral=True)
+            return
+
+        await inter.response.send_modal(HighRankDenyModal(self.applicant, self.position, self))
+
+class HighRankDecisionView(ui.View):
+    def __init__(self, applicant: discord.Member, position: str):
+        super().__init__(timeout=None)
+        self.applicant = applicant
+        self.position = position
+
+    @ui.button(label="Одобрить", style=ButtonStyle.green, emoji="✅")
+    async def approve(self, inter: discord.Interaction, button: ui.Button):
+        if not has_required_role(inter.user, [ROLES_RANKS[r] for r in AUTHORIZED_RANKS]):
+            await inter.response.send_message("❌ У вас нет прав для этого действия.", ephemeral=True)
+            return
+
+        embed = inter.message.embeds[0]
+        embed.color = 0x00ff00
+        embed.set_footer(text=f"Одобрено: {inter.user} ({inter.user.id})")
+        for item in self.children:
+            item.disabled = True
+        await inter.response.edit_message(embed=embed, view=self)
+
+        log_embed = Embed(
+            title="✅ Заявка на High Rank — ОДОБРЕНА",
+            color=0x00ff00,
+            timestamp=datetime.datetime.utcnow()
+        )
+        log_embed.add_field(name="Кто одобрил", value=f"{inter.user.mention} | {inter.user.id}", inline=False)
+        log_embed.add_field(name="Кому одобрено", value=f"{self.applicant.mention} | {self.applicant.id}", inline=False)
+        log_embed.add_field(name="Должность", value=self.position, inline=False)
+        await send_log(log_embed)
+
+        try:
+            await self.applicant.send(f"✅ Ваша заявка на **{self.position}** одобрена!")
+        except:
+            pass
+
+    @ui.button(label="Отказать", style=ButtonStyle.red, emoji="❌")
+    async def deny(self, inter: discord.Interaction, button: ui.Button):
+        if not has_required_role(inter.user, [ROLES_RANKS[r] for r in AUTHORIZED_RANKS]):
+            await inter.response.send_message("❌ У вас нет прав для этого действия.", ephemeral=True)
+            return
+
+        await inter.response.send_modal(HighRankDenyModal(self.applicant, self.position, self))
+
+class HighRankDenyModal(ui.Modal, title="Причина отказа"):
+    def __init__(self, applicant: discord.Member, position: str, view):
+        super().__init__()
+        self.applicant = applicant
+        self.position = position
+        self.view = view
+
+    reason = ui.TextInput(
+        label="Причина отказа",
+        style=discord.TextStyle.paragraph,
+        required=True,
+        max_length=500
+    )
+
+    async def on_submit(self, inter: discord.Interaction):
+        try:
+            await self.applicant.send(
+                f"❌ Ваша заявка на **{self.position}** отклонена.\n**Причина:** {self.reason.value}"
+            )
+        except:
+            pass
+
+        embed = inter.message.embeds[0]
+        embed.color = 0xff0000
+        embed.set_footer(text=f"Отказано: {inter.user} ({inter.user.id}) — {self.reason.value}")
+        for item in self.view.children:
+            item.disabled = True
+        await inter.response.edit_message(embed=embed, view=self.view)
+
+        log_embed = Embed(
+            title="❌ Заявка на High Rank — ОТКАЗАНА",
+            color=0xff0000,
+            timestamp=datetime.datetime.utcnow()
+        )
+        log_embed.add_field(name="Кто отказал", value=f"{inter.user.mention} | {inter.user.id}", inline=False)
+        log_embed.add_field(name="Кому отказано", value=f"{self.applicant.mention} | {self.applicant.id}", inline=False)
+        log_embed.add_field(name="Должность", value=self.position, inline=False)
+        log_embed.add_field(name="Причина", value=self.reason.value, inline=False)
+        await send_log(log_embed)
 
 # === ЗАПУСК ===
 if __name__ == "__main__":
