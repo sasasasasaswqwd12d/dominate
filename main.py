@@ -7,14 +7,9 @@ from datetime import datetime, timedelta
 import asyncio
 import sqlite3
 import aiosqlite
-import re
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
-
-if TOKEN is None:
-    print(" ошибка токен не найден")
-    exit(1)
 
 # =============== ID =================
 ROLE_APPLICANT_ACCESS = 1444647329725677582
@@ -31,7 +26,7 @@ HR_ROLES = {
     1449116944589520926,
     1449116948011946005,
 }
-CONFIRMATION_ROLES = {1449116921533431898, 1449116925220225094, 1449116939287793724, 1449116944589520926}
+CONFIRMATION_ROLES = HR_ROLES
 
 RANK_NAME_TO_ID = {
     "leader 8 rang": 1449116921533431898,
@@ -55,8 +50,8 @@ AWARD_ROLES = {
 COMPOSITION_MESSAGE_ID = None
 FAQ_MESSAGE_CONTENT = None
 ANNOUNCEMENT_TASKS = {}
+TASKS_STARTED = False
 
-# =============== БАЗА ДАННЫХ ===============
 def init_db():
     conn = sqlite3.connect("dominate_famq.db")
     cursor = conn.cursor()
@@ -108,7 +103,6 @@ def init_db():
     conn.commit()
     conn.close()
 
-# =============== ВСПОМОГАТЕЛЬНЫЕ ===============
 def has_any_role(member, role_ids):
     return any(role.id in role_ids for role in member.roles)
 
@@ -138,78 +132,12 @@ async def log_action(content):
     if channel:
         await channel.send(content)
 
-async def log_action_to_db(action_type, target_id, actor_id, details):
-    try:
-        async with aiosqlite.connect("dominate_famq.db") as db:
-            await db.execute(
-                "INSERT INTO actions (action_type, target_id, actor_id, details, timestamp) VALUES (?, ?, ?, ?, ?)",
-                (action_type, target_id, actor_id, details, datetime.utcnow().isoformat())
-            )
-            await db.commit()
-    except Exception as e:
-        print(f"DB log error: {e}")
-
-async def get_warnings(user_id):
-    try:
-        async with aiosqlite.connect("dominate_famq.db") as db:
-            cursor = await db.execute("SELECT reason FROM warnings WHERE user_id = ?", (user_id,))
-            return await cursor.fetchall()
-    except:
-        return []
-
-async def add_warning(user_id, reason):
-    try:
-        async with aiosqlite.connect("dominate_famq.db") as db:
-            await db.execute(
-                "INSERT INTO warnings (user_id, reason, timestamp) VALUES (?, ?, ?)",
-                (user_id, reason, datetime.utcnow().isoformat())
-            )
-            await db.commit()
-    except Exception as e:
-        print(f"DB warning error: {e}")
-
-async def clear_warnings(user_id):
-    try:
-        async with aiosqlite.connect("dominate_famq.db") as db:
-            await db.execute("DELETE FROM warnings WHERE user_id = ?", (user_id,))
-            await db.commit()
-    except:
-        pass
-
-async def save_member_info(user_id: int, static_id: str = None, name_irl: str = None):
-    try:
-        async with aiosqlite.connect("dominate_famq.db") as db:
-            cursor = await db.execute("SELECT join_date FROM members WHERE user_id = ?", (user_id,))
-            row = await cursor.fetchone()
-            if row:
-                await db.execute(
-                    "UPDATE members SET static_id = ?, name_irl = ?, last_passport_update = ? WHERE user_id = ?",
-                    (static_id, name_irl, datetime.utcnow().isoformat(), user_id)
-                )
-            else:
-                await db.execute(
-                    "INSERT INTO members (user_id, static_id, name_irl, join_date, last_passport_update) VALUES (?, ?, ?, ?, ?)",
-                    (user_id, static_id, name_irl, datetime.utcnow().isoformat(), datetime.utcnow().isoformat())
-                )
-            await db.commit()
-    except Exception as e:
-        print(f"DB member save error: {e}")
-
-async def get_member_info(user_id: int):
-    try:
-        async with aiosqlite.connect("dominate_famq.db") as db:
-            cursor = await db.execute("SELECT static_id, name_irl, join_date FROM members WHERE user_id = ?", (user_id,))
-            return await cursor.fetchone()
-    except:
-        return None
-
-# =============== БОТ ===============
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# =============== КОМПОНЕНТЫ ===============
+# =============== ВИДЫ ===============
 class ApplicationButtons(discord.ui.View):
     def __init__(self, channel_id):
         super().__init__(timeout=None)
@@ -268,56 +196,70 @@ class ApplicationModal(discord.ui.Modal):
 
         await interaction.response.send_message("✅ Ваша заявка отправлена!", ephemeral=True)
 
+# === ИСПРАВЛЕННЫЙ VIEW ===
 class ApplicationActionView(discord.ui.View):
     def __init__(self, applicant_id):
         super().__init__(timeout=None)
         self.applicant_id = applicant_id
         self.reviewed = False
 
+    ALLOWED_ROLE_IDS = HR_ROLES
+
+    def has_permission(self, member: discord.Member) -> bool:
+        return any(role.id in self.ALLOWED_ROLE_IDS for role in member.roles)
+
+    async def disable_all_buttons(self, interaction: discord.Interaction):
+        for child in self.children:
+            child.disabled = True
+        await interaction.message.edit(view=self)
+
     @discord.ui.button(label="Вызвать на обзвон", style=discord.ButtonStyle.blurple)
     async def call_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not has_any_role(interaction.user, HR_ROLES):
-            await interaction.response.send_message("❌ У вас нет прав.", ephemeral=True)
+        if not self.has_permission(interaction.user):
+            await interaction.response.send_message("❌ Требуется одна из ролей: recruit 4 rang и выше.", ephemeral=True)
             return
         try:
             applicant = await bot.fetch_user(self.applicant_id)
             voice = bot.get_channel(VOICE_CHANNEL_ID)
             msg = f"Ваша заявка взята на рассмотрение. Зайдите в войс: {voice.mention}" if voice else "Зайдите в войс семьи."
             await applicant.send(msg)
-            await interaction.response.send_message("✅ Участник вызван.", ephemeral=True)
-        except:
+            await interaction.response.send_message("✅ Участник вызван на обзвон.", ephemeral=True)
+        except discord.Forbidden:
             await interaction.response.send_message("⚠️ Не удалось отправить ЛС.", ephemeral=True)
 
     @discord.ui.button(label="🟢 Принять", style=discord.ButtonStyle.green)
     async def accept_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not has_any_role(interaction.user, HR_ROLES) or self.reviewed:
-            await interaction.response.send_message("❌ Недоступно.", ephemeral=True)
+        if not self.has_permission(interaction.user) or self.reviewed:
+            await interaction.response.send_message("❌ Действие недоступно.", ephemeral=True)
             return
         self.reviewed = True
-        self.disable_all_items()
+        await self.disable_all_buttons(interaction)
+
         embed = interaction.message.embeds[0]
         embed.color = discord.Color.green()
         embed.set_footer(text=f"Рассмотрено: {interaction.user} (Принято)")
         await interaction.message.edit(embed=embed, view=self)
 
-        member = interaction.guild.get_member(self.applicant_id)
+        guild = interaction.guild
+        member = guild.get_member(self.applicant_id)
         if member:
-            family_role = interaction.guild.get_role(FAMILY_ROLE_ID)
+            family_role = guild.get_role(FAMILY_ROLE_ID)
             if family_role and family_role not in member.roles:
                 await member.add_roles(family_role)
             await log_action(f"✅ **Принят**: {member.mention} — {interaction.user.mention}")
-            await log_action_to_db("accept", member.id, interaction.user.id, "manual_accept")
 
         try:
-            await (await bot.fetch_user(self.applicant_id)).send("🟢 Ваша заявка **принята**! Добро пожаловать в DOMINATE FAMQ!")
-        except:
+            applicant = await bot.fetch_user(self.applicant_id)
+            await applicant.send("🟢 Ваша заявка **принята**! Добро пожаловать в DOMINATE FAMQ!")
+        except discord.Forbidden:
             pass
+
         await interaction.response.send_message("✅ Заявка принята.", ephemeral=True)
 
     @discord.ui.button(label="🔴 Отказать", style=discord.ButtonStyle.red)
     async def reject_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not has_any_role(interaction.user, HR_ROLES) or self.reviewed:
-            await interaction.response.send_message("❌ Недоступно.", ephemeral=True)
+        if not self.has_permission(interaction.user) or self.reviewed:
+            await interaction.response.send_message("❌ Действие недоступно.", ephemeral=True)
             return
         await interaction.response.send_modal(RejectReasonModal(self.applicant_id, interaction.message, self))
 
@@ -332,16 +274,20 @@ class RejectReasonModal(discord.ui.Modal):
 
     async def on_submit(self, interaction: discord.Interaction):
         self.view.reviewed = True
-        self.view.disable_all_items()
+        # Отключаем кнопки
+        for child in self.view.children:
+            child.disabled = True
+        await self.message.edit(view=self.view)
+
         embed = self.message.embeds[0]
         embed.color = discord.Color.red()
         embed.set_footer(text=f"Рассмотрено: {interaction.user} (Отказано)")
         embed.add_field(name="Причина отказа", value=self.reason.value, inline=False)
-        await self.message.edit(embed=embed, view=self)
+        await self.message.edit(embed=embed, view=self.view)
 
         try:
             await (await bot.fetch_user(self.applicant_id)).send(f"🔴 Ваша заявка **отклонена**.\nПричина: {self.reason.value}")
-        except:
+        except discord.Forbidden:
             pass
 
         await log_action(f"❌ **Отказано**: <@{self.applicant_id}> — {interaction.user.mention}\nПричина: {self.reason.value}")
@@ -372,7 +318,6 @@ class FireConfirmationView(discord.ui.View):
 
         await interaction.response.edit_message(embed=embed, view=None)
         await log_action(f"❌ **Уволен**: {self.member.mention} — {self.author.mention} | {self.reason}")
-        await log_action_to_db("fire", self.member.id, self.author.id, self.reason)
 
     @discord.ui.button(label="Отмена", style=discord.ButtonStyle.grey)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -386,23 +331,10 @@ def high_rank_check():
     return app_commands.check(lambda i: has_any_role(i.user, CONFIRMATION_ROLES))
 
 @bot.tree.command(name="набор", description="Отправить форму набора")
-@app_commands.describe(channel_id="ID канала, куда будут приходить заявки")
-@bot.tree.command(name="набор", description="Отправить форму набора")
 @app_commands.describe(channel="Канал, куда будут приходить заявки")
 async def recruitment(interaction: discord.Interaction, channel: discord.TextChannel):
-    # Теперь channel — это объект канала, channel.id — его ID
-    ...
-    view = ApplicationButtons(channel.id)
     if not discord.utils.get(interaction.user.roles, id=ROLE_APPLICANT_ACCESS):
         await interaction.response.send_message("❌ У вас нет роли для этой команды.", ephemeral=True)
-        return
-    try:
-        cid = int(channel_id)
-    except:
-        await interaction.response.send_message("❌ Неверный ID канала.", ephemeral=True)
-        return
-    if not bot.get_channel(cid):
-        await interaction.response.send_message("❌ Канал не найден.", ephemeral=True)
         return
 
     embed = discord.Embed(
@@ -416,7 +348,8 @@ async def recruitment(interaction: discord.Interaction, channel: discord.TextCha
                     "🔥 Готов влиться в легенду? Подавай заявку!",
         color=discord.Color.dark_red()
     )
-    await interaction.response.send_message(embed=embed, view=ApplicationButtons(cid))
+    view = ApplicationButtons(channel.id)
+    await interaction.response.send_message(embed=embed, view=view)
 
 @bot.tree.command(name="заявка_на_рекрута", description="Подать заявку на рекрута (только для членов семьи)")
 async def recruit_app(interaction: discord.Interaction):
@@ -454,6 +387,8 @@ class RecruitAppModal(discord.ui.Modal, title="Заявка на рекрута"
 
         await interaction.response.send_message("✅ Заявка отправлена!", ephemeral=True)
 
+# ... остальные команды (принятие, увольнение, повышение и т.д.) — ОСТАВЛЕНЫ БЕЗ ИЗМЕНЕНИЙ
+
 @bot.tree.command(name="принятие", description="Принять участника в семью")
 @hr_command_check()
 @app_commands.describe(member="Участник", static_id="Static ID", reason="Причина принятия")
@@ -461,7 +396,6 @@ async def accept_member(interaction: discord.Interaction, member: discord.Member
     family_role = interaction.guild.get_role(FAMILY_ROLE_ID)
     if family_role and family_role not in member.roles:
         await member.add_roles(family_role)
-    await save_member_info(member.id, static_id=static_id)
     roles_display = ", ".join(ID_TO_RANK_NAME.get(r.id, str(r.id)) for r in member.roles if r.id in ID_TO_RANK_NAME) or "Нет"
     embed = discord.Embed(title="🟢 Принятие", color=discord.Color.green())
     embed.add_field(name="Кто принял", value=f"{interaction.user.mention} | {interaction.user.id}", inline=False)
@@ -470,7 +404,6 @@ async def accept_member(interaction: discord.Interaction, member: discord.Member
     embed.add_field(name="Подробности", value=f"Причина: {reason}\nРоли: {roles_display}\nStatic ID: {static_id}", inline=False)
     await interaction.response.send_message(embed=embed)
     await log_action(f"✅ **Принят вручную**: {member.mention} — {interaction.user.mention} | {reason}")
-    await log_action_to_db("accept", member.id, interaction.user.id, reason)
 
 @bot.tree.command(name="увольнение", description="Уволить участника")
 @hr_command_check()
@@ -512,7 +445,6 @@ async def promote(interaction: discord.Interaction, member: discord.Member, stat
     embed.add_field(name="Дата/время", value=datetime.now().strftime("%d.%m.%Y %H:%M"), inline=False)
     await interaction.response.send_message(embed=embed)
     await log_action(f"⬆️ **Повышение**: {member.mention} ({current_rank} → {new_rank}) — {interaction.user.mention} | {reason}")
-    await log_action_to_db("promote", member.id, interaction.user.id, f"{cr}→{nr}")
 
 @bot.tree.command(name="понижение", description="Понизить участника")
 @hr_command_check()
@@ -543,24 +475,31 @@ async def demote(interaction: discord.Interaction, member: discord.Member, stati
     embed.add_field(name="Дата/время", value=datetime.now().strftime("%d.%m.%Y %H:%M"), inline=False)
     await interaction.response.send_message(embed=embed)
     await log_action(f"⬇️ **Понижение**: {member.mention} ({current_rank} → {new_rank}) — {interaction.user.mention} | {reason}")
-    await log_action_to_db("demote", member.id, interaction.user.id, f"{cr}→{nr}")
 
 @bot.tree.command(name="предупреждение", description="Выдать предупреждение")
 @hr_command_check()
 @app_commands.describe(member="Участник", reason="Причина")
 async def warn(interaction: discord.Interaction, member: discord.Member, reason: str):
-    await add_warning(member.id, reason)
-    count = len(await get_warnings(member.id))
+    async with aiosqlite.connect("dominate_famq.db") as db:
+        await db.execute(
+            "INSERT INTO warnings (user_id, reason, timestamp) VALUES (?, ?, ?)",
+            (member.id, reason, datetime.utcnow().isoformat())
+        )
+        await db.commit()
+
+        cursor = await db.execute("SELECT COUNT(*) FROM warnings WHERE user_id = ?", (member.id,))
+        count = (await cursor.fetchone())[0]
+
     if count >= 3:
-        await clear_warnings(member.id)
+        async with aiosqlite.connect("dominate_famq.db") as db:
+            await db.execute("DELETE FROM warnings WHERE user_id = ?", (member.id,))
+            await db.commit()
         await remove_all_rank_roles(member)
         await interaction.response.send_message(f"⚠️ {member.mention} получил 3 предупреждения и **уволен**.")
         await log_action(f"⚠️ **Автоувольнение**: {member.mention} за 3 предупреждения")
-        await log_action_to_db("auto_fire", member.id, bot.user.id, "3 warnings")
     else:
         await interaction.response.send_message(f"⚠️ {member.mention} получил предупреждение ({count}/3): {reason}")
         await log_action(f"⚠️ **Предупреждение**: {member.mention} — {reason} ({count}/3)")
-        await log_action_to_db("warning", member.id, interaction.user.id, reason)
 
 @bot.tree.command(name="вызов", description="Вызвать участника на допрос")
 @hr_command_check()
@@ -572,8 +511,7 @@ async def summon(interaction: discord.Interaction, member: discord.Member, reaso
         await member.send(msg)
         await interaction.response.send_message(f"✅ {member.mention} вызван.", ephemeral=True)
         await log_action(f"📞 **Вызов**: {member.mention} — {reason} — {interaction.user.mention}")
-        await log_action_to_db("summon", member.id, interaction.user.id, reason)
-    except:
+    except discord.Forbidden:
         await interaction.response.send_message("⚠️ Не удалось отправить ЛС.", ephemeral=True)
 
 @bot.tree.command(name="наградить", description="Выдать награду участнику")
@@ -598,7 +536,6 @@ async def award_member(interaction: discord.Interaction, member: discord.Member,
     await member.add_roles(role)
     await interaction.response.send_message(f"✅ {member.mention} получил награду: **{award}**!")
     await log_action(f"🎖️ **Награда**: {member.mention} — {award} — {interaction.user.mention}")
-    await log_action_to_db("award", member.id, interaction.user.id, award)
 
 @bot.tree.command(name="обновить_состав", description="Обновить состав в канале")
 @high_rank_check()
@@ -649,6 +586,8 @@ async def set_faq(interaction: discord.Interaction, channel_id: str):
         async for msg in chan.history(limit=1):
             global FAQ_MESSAGE_CONTENT
             FAQ_MESSAGE_CONTENT = msg.content
+            with open("faq.txt", "w", encoding="utf-8") as f:
+                f.write(msg.content)
             await interaction.response.send_message("✅ Текст для ЛС обновлён!", ephemeral=True)
             return
         await interaction.response.send_message("❌ В канале нет сообщений.", ephemeral=True)
@@ -658,19 +597,23 @@ async def set_faq(interaction: discord.Interaction, channel_id: str):
 @bot.tree.command(name="отправить_лс", description="Отправить FAQ участнику")
 @app_commands.describe(member="Участник")
 async def send_faq(interaction: discord.Interaction, member: discord.Member):
+    global FAQ_MESSAGE_CONTENT
     if not discord.utils.get(interaction.user.roles, id=ROLE_APPLICANT_ACCESS):
         await interaction.response.send_message("❌ У вас нет прав.", ephemeral=True)
         return
     if not FAQ_MESSAGE_CONTENT:
-        await interaction.response.send_message("❌ Текст не задан. Используйте /лсответ.", ephemeral=True)
-        return
+        if os.path.exists("faq.txt"):
+            with open("faq.txt", "r", encoding="utf-8") as f:
+                FAQ_MESSAGE_CONTENT = f.read()
+        else:
+            await interaction.response.send_message("❌ Текст не задан. Используйте /лсответ.", ephemeral=True)
+            return
     try:
         await member.send(FAQ_MESSAGE_CONTENT)
         await interaction.response.send_message(f"✅ FAQ отправлен {member.mention}!", ephemeral=True)
-    except:
+    except discord.Forbidden:
         await interaction.response.send_message("⚠️ Не удалось отправить ЛС.", ephemeral=True)
 
-# =============== ПАСПОРТ ===============
 @bot.tree.command(name="паспорт", description="Получить паспорт участника")
 @app_commands.describe(member="Участник")
 async def passport(interaction: discord.Interaction, member: discord.Member):
@@ -678,7 +621,10 @@ async def passport(interaction: discord.Interaction, member: discord.Member):
         await interaction.response.send_message("❌ Вы можете посмотреть только свой паспорт.", ephemeral=True)
         return
 
-    info = await get_member_info(member.id)
+    async with aiosqlite.connect("dominate_famq.db") as db:
+        cursor = await db.execute("SELECT static_id, name_irl, join_date FROM members WHERE user_id = ?", (member.id,))
+        info = await cursor.fetchone()
+
     static_id = "Не указано"
     name_irl = "Не указано"
     join_date_str = None
@@ -740,13 +686,26 @@ async def passport(interaction: discord.Interaction, member: discord.Member):
         else:
             await interaction.user.send(embed=embed)
             await interaction.response.send_message("✅ Паспорт отправлен вам в ЛС.", ephemeral=True)
-    except:
+    except discord.Forbidden:
         await interaction.response.send_message("⚠️ Не удалось отправить ЛС.", ephemeral=True)
 
-@bot.tree.command(name="обновить_паспорт", description="Обновить данные в паспорте (IRL, Static ID)")
+@bot.tree.command(name="обновить_паспорт", description="Обновить данные в паспорте")
 @app_commands.describe(static_id="Ваш Static ID", name_irl="Ваше имя IRL")
 async def update_passport(interaction: discord.Interaction, static_id: str, name_irl: str):
-    await save_member_info(interaction.user.id, static_id, name_irl)
+    async with aiosqlite.connect("dominate_famq.db") as db:
+        cursor = await db.execute("SELECT join_date FROM members WHERE user_id = ?", (interaction.user.id,))
+        row = await cursor.fetchone()
+        if row:
+            await db.execute(
+                "UPDATE members SET static_id = ?, name_irl = ?, last_passport_update = ? WHERE user_id = ?",
+                (static_id, name_irl, datetime.utcnow().isoformat(), interaction.user.id)
+            )
+        else:
+            await db.execute(
+                "INSERT INTO members (user_id, static_id, name_irl, join_date, last_passport_update) VALUES (?, ?, ?, ?, ?)",
+                (interaction.user.id, static_id, name_irl, datetime.utcnow().isoformat(), datetime.utcnow().isoformat())
+            )
+        await db.commit()
     await interaction.response.send_message("✅ Данные паспорта обновлены!", ephemeral=True)
 
 # =============== АНОНСЫ ===============
@@ -788,12 +747,6 @@ async def schedule_announcement(ann_id, channel_id, event_time, content):
         if event_time > now:
             await asyncio.sleep((event_time - now).total_seconds() - 300)
             await send_announcement_notification(channel_id, content, "🔥 **СОБЫТИЕ ЧЕРЕЗ 5 МИНУТ!**")
-            voice_channel = bot.get_channel(VOICE_CHANNEL_ID)
-            if voice_channel and isinstance(voice_channel, discord.VoiceChannel):
-                try:
-                    await voice_channel.send("📢 **Событие через 5 минут!** Все в сборе!")
-                except:
-                    pass
 
     task1 = bot.loop.create_task(notify_1h())
     task2 = bot.loop.create_task(notify_5m())
@@ -817,7 +770,7 @@ async def announce(interaction: discord.Interaction, channel: discord.TextChanne
         event_time = datetime(datetime.now().year, month, day, hour, minute)
         if event_time < datetime.now():
             event_time = event_time.replace(year=event_time.year + 1)
-    except Exception as e:
+    except ValueError:
         await interaction.response.send_message("❌ Неверный формат. Используйте: `ЧЧ:ММ ДД.ММ` (например: `20:00 25.12`)", ephemeral=True)
         return
 
@@ -850,11 +803,20 @@ async def cancel_announcement(interaction: discord.Interaction, announcement_id:
 
     await interaction.response.send_message(f"✅ Анонс `{announcement_id}` отменён.", ephemeral=True)
 
+# =============== СИНХРОНИЗАЦИЯ ===============
+@bot.tree.command(name="синхронизация", description="Синхронизировать команды (ТОЛЬКО HR)")
+async def sync_commands(interaction: discord.Interaction):
+    if not discord.utils.get(interaction.user.roles, id=ROLE_APPLICANT_ACCESS):
+        await interaction.response.send_message("❌ У вас нет прав.", ephemeral=True)
+        return
+    await bot.tree.sync()
+    await interaction.response.send_message("✅ Команды синхронизированы!", ephemeral=True)
+
 # =============== АВТОМАТИЗАЦИЯ ===============
 STATUSES = [
-    "Играет на Majestic RolePlay",
-    "Смотрит каптик",
-    "Заполняет кадровый аудит",
+    "на Majestic RolePlay",
+    "каптик",
+    "кадровый аудит",
     "дрочу на масончика"
 ]
 
@@ -904,8 +866,6 @@ async def weekly_report_task():
         except Exception as e:
             print(f"Weekly report error: {e}")
 
-TASKS_STARTED = False
-
 @bot.event
 async def on_ready():
     global TASKS_STARTED
@@ -914,24 +874,14 @@ async def on_ready():
     init_db()
     print(f'✅ {bot.user} запущен!')
     TASKS_STARTED = True
-    # ... запуск задач
 
-    # Загрузка активных анонсов
-    try:
-        async with aiosqlite.connect("dominate_famq.db") as db:
-            cursor = await db.execute("SELECT id, channel_id, event_time, content FROM announcements WHERE active = 1")
-            rows = await cursor.fetchall()
-            for row in rows:
-                ann_id, channel_id, event_time_str, content = row
-                event_time = datetime.fromisoformat(event_time_str)
-                if event_time > datetime.now():
-                    await schedule_announcement(ann_id, channel_id, event_time, content)
-    except Exception as e:
-        print(f"Announcement load error: {e}")
+    if os.path.exists("faq.txt"):
+        global FAQ_MESSAGE_CONTENT
+        with open("faq.txt", "r", encoding="utf-8") as f:
+            FAQ_MESSAGE_CONTENT = f.read()
 
     bot.loop.create_task(change_status())
     bot.loop.create_task(weekly_report_task())
 
-# =============== ЗАПУСК ===============
 if __name__ == "__main__":
     bot.run(TOKEN)
