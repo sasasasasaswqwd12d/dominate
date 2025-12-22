@@ -12,6 +12,10 @@ import re
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
+if TOKEN is None:
+    print(" ошибка токен не найден")
+    exit(1)
+
 # =============== ID =================
 ROLE_APPLICANT_ACCESS = 1444647329725677582
 FAMILY_ROLE_ID = 1449119840286675025
