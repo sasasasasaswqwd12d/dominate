@@ -12,46 +12,53 @@ load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 # =============== ID =================
-ROLE_APPLICANT_ACCESS = 1444647329725677582
-FAMILY_ROLE_ID = 1449119840286675025
-VOICE_CHANNEL_ID = 1449117056019468419
-LOG_CHANNEL_ID = 1450181312769167500
-RECRUIT_APP_CHANNEL_ID = 1450511499704668170
-REPORT_CHANNEL_ID = 1452532989090332724
+ROLE_APPLICANT_ACCESS = 1444647329725677582  # для /набор и /синхронизация
+FAMILY_ROLE_ID = 1449119840286675025        # роль семьи
+VOICE_CHANNEL_ID = 1449117056019468419       # войс для обзвона
+LOG_CHANNEL_ID = 1450181312769167500         # лог действий
+RECRUIT_APP_CHANNEL_ID = 1450511499704668170 # заявки на рекрута
 
+# HR-роли (доступ к командам)
 HR_ROLES = {
+    1449116921533431898,  # leader 8 rang
+    1449116925220225094,  # owner 7 rang
+    1449116939287793724,  # dep leader 6 rang
+    1449116944589520926,  # high rank 5 rang
+    1449116948011946005,  # recruit 4 rang
+}
+
+# Роли для доступа к /состав_фамы
+COMPOSITION_ACCESS_ROLES = {
     1449116921533431898,
     1449116925220225094,
     1449116939287793724,
     1449116944589520926,
-    1449116948011946005,
 }
-CONFIRMATION_ROLES = HR_ROLES
 
-RANK_NAME_TO_ID = {
-    "leader 8 rang": 1449116921533431898,
-    "owner 7 rang": 1449116925220225094,
-    "dep leader 6 rang": 1449116939287793724,
-    "high rank 5 rang": 1449116944589520926,
-    "recruit 4 rang": 1449116948011946005,
-    "main 3 rang": 1449116951732289596,
-    "test 2 rang": 1449116959550734488,
-    "academ 1 rang": 1449116973010128957,
-}
-ID_TO_RANK_NAME = {v: k for k, v in RANK_NAME_TO_ID.items()}
-RANK_ROLES = RANK_NAME_TO_ID
+# Все ранговые роли в порядке
+RANK_ROLES_ORDERED = [
+    1449116921533431898,  # leader 8 rang
+    1449116925220225094,  # owner 7 rang
+    1449116939287793724,  # dep leader 6 rang
+    1449116944589520926,  # high rank 5 rang
+    1449116948011946005,  # recruit 4 rang
+    1449116951732289596,  # main 3 rang
+    1449116959550734488,  # test 2 rang
+    1449116973010128957,  # academ 1 rang
+]
 
+# Награды
 AWARD_ROLES = {
     "за_верность": 1452534631185514496,
     "за_храбрость": 1452534677436108922,
     "за_службу": 1452534726718914683,
 }
 
-COMPOSITION_MESSAGE_ID = None
-FAQ_MESSAGE_CONTENT = None
-ANNOUNCEMENT_TASKS = {}
+# Глобальные переменные
 TASKS_STARTED = False
+WELCOME_MESSAGE = None
 
+# =============== БАЗА ДАННЫХ ===============
 def init_db():
     conn = sqlite3.connect("dominate_famq.db")
     cursor = conn.cursor()
@@ -103,10 +110,11 @@ def init_db():
     conn.commit()
     conn.close()
 
+# =============== ВСПОМОГАТЕЛЬНЫЕ ===============
 def has_any_role(member, role_ids):
     return any(role.id in role_ids for role in member.roles)
 
-def get_member_status(member):
+def get_status_emoji(member: discord.Member) -> str:
     return {
         discord.Status.online: "🟢",
         discord.Status.idle: "🟡",
@@ -116,7 +124,7 @@ def get_member_status(member):
 
 async def remove_all_rank_roles(member: discord.Member):
     roles_to_remove = []
-    for role_id in RANK_NAME_TO_ID.values():
+    for role_id in RANK_ROLES_ORDERED:
         role = discord.utils.get(member.guild.roles, id=role_id)
         if role and role in member.roles:
             roles_to_remove.append(role)
@@ -132,12 +140,13 @@ async def log_action(content):
     if channel:
         await channel.send(content)
 
+# =============== БОТ ===============
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# =============== ВИДЫ ===============
+# =============== КОМПОНЕНТЫ ===============
 class ApplicationButtons(discord.ui.View):
     def __init__(self, channel_id):
         super().__init__(timeout=None)
@@ -196,7 +205,6 @@ class ApplicationModal(discord.ui.Modal):
 
         await interaction.response.send_message("✅ Ваша заявка отправлена!", ephemeral=True)
 
-# === ИСПРАВЛЕННЫЙ VIEW ===
 class ApplicationActionView(discord.ui.View):
     def __init__(self, applicant_id):
         super().__init__(timeout=None)
@@ -274,7 +282,6 @@ class RejectReasonModal(discord.ui.Modal):
 
     async def on_submit(self, interaction: discord.Interaction):
         self.view.reviewed = True
-        # Отключаем кнопки
         for child in self.view.children:
             child.disabled = True
         await self.message.edit(view=self.view)
@@ -303,12 +310,14 @@ class FireConfirmationView(discord.ui.View):
 
     @discord.ui.button(label="Подтвердить увольнение", style=discord.ButtonStyle.red)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not has_any_role(interaction.user, CONFIRMATION_ROLES):
+        if not has_any_role(interaction.user, COMPOSITION_ACCESS_ROLES):
             await interaction.response.send_message("❌ Только лидерство может подтверждать.", ephemeral=True)
             return
 
         removed = await remove_all_rank_roles(self.member)
-        roles_display = ", ".join(ID_TO_RANK_NAME.get(r.id, str(r.id)) for r in removed) or "Нет"
+        roles_display = ", ".join(
+            [guild.get_role(rid).name for rid in RANK_ROLES_ORDERED if guild.get_role(rid) in removed]
+        ) if (guild := interaction.guild) else "Нет"
 
         embed = discord.Embed(title="🔴 Увольнение", color=discord.Color.red())
         embed.add_field(name="Кто уволил", value=f"{self.author.mention} | {self.author.id}", inline=False)
@@ -326,9 +335,6 @@ class FireConfirmationView(discord.ui.View):
 # =============== КОМАНДЫ ===============
 def hr_command_check():
     return app_commands.check(lambda i: has_any_role(i.user, HR_ROLES))
-
-def high_rank_check():
-    return app_commands.check(lambda i: has_any_role(i.user, CONFIRMATION_ROLES))
 
 @bot.tree.command(name="набор", description="Отправить форму набора")
 @app_commands.describe(channel="Канал, куда будут приходить заявки")
@@ -387,8 +393,6 @@ class RecruitAppModal(discord.ui.Modal, title="Заявка на рекрута"
 
         await interaction.response.send_message("✅ Заявка отправлена!", ephemeral=True)
 
-# ... остальные команды (принятие, увольнение, повышение и т.д.) — ОСТАВЛЕНЫ БЕЗ ИЗМЕНЕНИЙ
-
 @bot.tree.command(name="принятие", description="Принять участника в семью")
 @hr_command_check()
 @app_commands.describe(member="Участник", static_id="Static ID", reason="Причина принятия")
@@ -396,7 +400,9 @@ async def accept_member(interaction: discord.Interaction, member: discord.Member
     family_role = interaction.guild.get_role(FAMILY_ROLE_ID)
     if family_role and family_role not in member.roles:
         await member.add_roles(family_role)
-    roles_display = ", ".join(ID_TO_RANK_NAME.get(r.id, str(r.id)) for r in member.roles if r.id in ID_TO_RANK_NAME) or "Нет"
+    roles_display = ", ".join(
+        [guild.get_role(rid).name for rid in RANK_ROLES_ORDERED if guild.get_role(rid) in member.roles]
+    ) if (guild := interaction.guild) else "Нет"
     embed = discord.Embed(title="🟢 Принятие", color=discord.Color.green())
     embed.add_field(name="Кто принял", value=f"{interaction.user.mention} | {interaction.user.id}", inline=False)
     embed.add_field(name="Кого принял", value=f"{member.mention} | {member.id}", inline=False)
@@ -416,14 +422,31 @@ async def fire_member(interaction: discord.Interaction, member: discord.Member, 
 @hr_command_check()
 @app_commands.describe(member="Участник", static_id="Static ID", current_rank="Текущий ранг", new_rank="Новый ранг", reason="Причина")
 async def promote(interaction: discord.Interaction, member: discord.Member, static_id: str, current_rank: str, new_rank: str, reason: str):
-    cr, nr = current_rank.lower().strip(), new_rank.lower().strip()
-    if cr not in RANK_NAME_TO_ID or nr not in RANK_NAME_TO_ID:
-        valid = ", ".join(RANK_NAME_TO_ID.keys())
+    current_rank_norm = current_rank.lower().strip()
+    new_rank_norm = new_rank.lower().strip()
+
+    # Создаём маппинг ранг -> ID
+    RANK_TO_ID = {
+        "8": 1449116921533431898,
+        "7": 1449116925220225094,
+        "6": 1449116939287793724,
+        "5": 1449116944589520926,
+        "4": 1449116948011946005,
+        "3": 1449116951732289596,
+        "2": 1449116959550734488,
+        "1": 1449116973010128957,
+    }
+
+    if current_rank_norm not in RANK_TO_ID or new_rank_norm not in RANK_TO_ID:
+        valid = ", ".join(RANK_TO_ID.keys())
         await interaction.response.send_message(f"❌ Неверный ранг. Допустимо: {valid}", ephemeral=True)
         return
 
-    old_role = interaction.guild.get_role(RANK_NAME_TO_ID[cr])
-    new_role = interaction.guild.get_role(RANK_NAME_TO_ID[nr])
+    old_role_id = RANK_TO_ID[current_rank_norm]
+    new_role_id = RANK_TO_ID[new_rank_norm]
+
+    old_role = interaction.guild.get_role(old_role_id)
+    new_role = interaction.guild.get_role(new_role_id)
     if not new_role:
         await interaction.response.send_message("❌ Роль не найдена.", ephemeral=True)
         return
@@ -450,14 +473,30 @@ async def promote(interaction: discord.Interaction, member: discord.Member, stat
 @hr_command_check()
 @app_commands.describe(member="Участник", static_id="Static ID", current_rank="Текущий ранг", new_rank="Новый ранг", reason="Причина")
 async def demote(interaction: discord.Interaction, member: discord.Member, static_id: str, current_rank: str, new_rank: str, reason: str):
-    cr, nr = current_rank.lower().strip(), new_rank.lower().strip()
-    if cr not in RANK_NAME_TO_ID or nr not in RANK_NAME_TO_ID:
-        valid = ", ".join(RANK_NAME_TO_ID.keys())
+    current_rank_norm = current_rank.lower().strip()
+    new_rank_norm = new_rank.lower().strip()
+
+    RANK_TO_ID = {
+        "8": 1449116921533431898,
+        "7": 1449116925220225094,
+        "6": 1449116939287793724,
+        "5": 1449116944589520926,
+        "4": 1449116948011946005,
+        "3": 1449116951732289596,
+        "2": 1449116959550734488,
+        "1": 1449116973010128957,
+    }
+
+    if current_rank_norm not in RANK_TO_ID or new_rank_norm not in RANK_TO_ID:
+        valid = ", ".join(RANK_TO_ID.keys())
         await interaction.response.send_message(f"❌ Неверный ранг. Допустимо: {valid}", ephemeral=True)
         return
 
-    old_role = interaction.guild.get_role(RANK_NAME_TO_ID[cr])
-    new_role = interaction.guild.get_role(RANK_NAME_TO_ID[nr])
+    old_role_id = RANK_TO_ID[current_rank_norm]
+    new_role_id = RANK_TO_ID[new_rank_norm]
+
+    old_role = interaction.guild.get_role(old_role_id)
+    new_role = interaction.guild.get_role(new_role_id)
     if not new_role:
         await interaction.response.send_message("❌ Роль не найдена.", ephemeral=True)
         return
@@ -522,7 +561,7 @@ async def summon(interaction: discord.Interaction, member: discord.Member, reaso
     app_commands.Choice(name="За службу", value="за_службу"),
 ])
 async def award_member(interaction: discord.Interaction, member: discord.Member, award: str):
-    if not has_any_role(interaction.user, CONFIRMATION_ROLES):
+    if not has_any_role(interaction.user, COMPOSITION_ACCESS_ROLES):
         await interaction.response.send_message("❌ Только лидерство может выдавать награды.", ephemeral=True)
         return
     role_id = AWARD_ROLES[award]
@@ -537,82 +576,62 @@ async def award_member(interaction: discord.Interaction, member: discord.Member,
     await interaction.response.send_message(f"✅ {member.mention} получил награду: **{award}**!")
     await log_action(f"🎖️ **Награда**: {member.mention} — {award} — {interaction.user.mention}")
 
-@bot.tree.command(name="обновить_состав", description="Обновить состав в канале")
-@high_rank_check()
-async def update_composition(interaction: discord.Interaction):
-    global COMPOSITION_MESSAGE_ID
-    channel = bot.get_channel(REPORT_CHANNEL_ID)
-    if not channel:
-        await interaction.response.send_message("❌ Канал состава не найден.", ephemeral=True)
+@bot.tree.command(name="состав_фамы", description="Показать состав семьи")
+async def family_roster(interaction: discord.Interaction):
+    if not any(role.id in COMPOSITION_ACCESS_ROLES for role in interaction.user.roles):
+        await interaction.response.send_message(
+            "❌ Доступ запрещён. Требуется одна из ролей: leader 8 rang, owner 7 rang, dep leader 6 rang, high rank 5 rang.",
+            ephemeral=True
+        )
         return
 
-    embed = discord.Embed(title="👥 Состав DOMINATE FAMQ", color=discord.Color.dark_red(), timestamp=datetime.utcnow())
-    total, online = 0, 0
-    for role_id, name in RANK_ROLES.items():
-        role = interaction.guild.get_role(role_id)
+    guild = interaction.guild
+    embed = discord.Embed(
+        title="👥 Состав DOMINATE FAMQ",
+        color=discord.Color.dark_red(),
+        timestamp=datetime.utcnow()
+    )
+
+    total_members = 0
+
+    for role_id in RANK_ROLES_ORDERED:
+        role = guild.get_role(role_id)
         if not role:
             continue
+
         members = [m for m in role.members if not m.bot]
-        total += len(members)
-        online += sum(1 for m in members if m.status != discord.Status.offline)
-        lst = "\n".join(f"{i+1}. {m.mention} {get_member_status(m)}" for i, m in enumerate(members)) if members else "—"
-        embed.add_field(name=f"**{name}**", value=lst, inline=False)
+        total_members += len(members)
 
-    embed.set_footer(text=f"Всего: {total} | Онлайн: {online}")
-
-    if COMPOSITION_MESSAGE_ID:
-        try:
-            msg = await channel.fetch_message(COMPOSITION_MESSAGE_ID)
-            await msg.edit(embed=embed)
-        except:
-            msg = await channel.send(embed=embed)
-            COMPOSITION_MESSAGE_ID = msg.id
-    else:
-        msg = await channel.send(embed=embed)
-        COMPOSITION_MESSAGE_ID = msg.id
-
-    await interaction.response.send_message("✅ Состав обновлён!", ephemeral=True)
-
-@bot.tree.command(name="лсответ", description="Установить текст для новых участников")
-@app_commands.describe(channel_id="ID канала с текстом (последнее сообщение)")
-async def set_faq(interaction: discord.Interaction, channel_id: str):
-    if not discord.utils.get(interaction.user.roles, id=ROLE_APPLICANT_ACCESS):
-        await interaction.response.send_message("❌ У вас нет прав.", ephemeral=True)
-        return
-    try:
-        chan = bot.get_channel(int(channel_id))
-        if not chan:
-            raise ValueError
-        async for msg in chan.history(limit=1):
-            global FAQ_MESSAGE_CONTENT
-            FAQ_MESSAGE_CONTENT = msg.content
-            with open("faq.txt", "w", encoding="utf-8") as f:
-                f.write(msg.content)
-            await interaction.response.send_message("✅ Текст для ЛС обновлён!", ephemeral=True)
-            return
-        await interaction.response.send_message("❌ В канале нет сообщений.", ephemeral=True)
-    except:
-        await interaction.response.send_message("❌ Ошибка. Проверьте ID канала.", ephemeral=True)
-
-@bot.tree.command(name="отправить_лс", description="Отправить FAQ участнику")
-@app_commands.describe(member="Участник")
-async def send_faq(interaction: discord.Interaction, member: discord.Member):
-    global FAQ_MESSAGE_CONTENT
-    if not discord.utils.get(interaction.user.roles, id=ROLE_APPLICANT_ACCESS):
-        await interaction.response.send_message("❌ У вас нет прав.", ephemeral=True)
-        return
-    if not FAQ_MESSAGE_CONTENT:
-        if os.path.exists("faq.txt"):
-            with open("faq.txt", "r", encoding="utf-8") as f:
-                FAQ_MESSAGE_CONTENT = f.read()
+        if members:
+            members.sort(key=lambda m: (m.status != discord.Status.online, m.name))
+            member_list = "\n".join(
+                f"{idx+1}. {m.mention} - {get_status_emoji(m)}"
+                for idx, m in enumerate(members)
+            )
+            embed.add_field(name=f"**{role.name}**", value=member_list, inline=False)
         else:
-            await interaction.response.send_message("❌ Текст не задан. Используйте /лсответ.", ephemeral=True)
-            return
-    try:
-        await member.send(FAQ_MESSAGE_CONTENT)
-        await interaction.response.send_message(f"✅ FAQ отправлен {member.mention}!", ephemeral=True)
-    except discord.Forbidden:
-        await interaction.response.send_message("⚠️ Не удалось отправить ЛС.", ephemeral=True)
+            embed.add_field(name=f"**{role.name}**", value="—", inline=False)
+
+    embed.set_footer(text=f"Общее количество людей семьи: {total_members}")
+
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="инструкция", description="Получить инструкцию по боту")
+@hr_command_check()
+async def instructions(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="📘 Инструкция по Masonchik bot",
+        description="Бот для управления кадрами в DOMINATE FAMQ.\nАвтор: **mason**",
+        color=discord.Color.green()
+    )
+    embed.add_field(name="/набор #канал", value="Запуск формы набора (требуется особая роль)", inline=False)
+    embed.add_field(name="/принятие @участник static причина", value="Принять участника", inline=False)
+    embed.add_field(name="/увольнение @участник static причина", value="Уволить (с подтверждением)", inline=False)
+    embed.add_field(name="/повышение /понижение", value="Управление рангами", inline=False)
+    embed.add_field(name="/состав_фамы", value="Показать всех по ролям", inline=False)
+    embed.add_field(name="/статистика /история", value="Аналитика по участникам", inline=False)
+    embed.add_field(name="Дополнительно", value="Автоматические предупреждения, логирование, статусы", inline=False)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @bot.tree.command(name="паспорт", description="Получить паспорт участника")
 @app_commands.describe(member="Участник")
@@ -632,10 +651,12 @@ async def passport(interaction: discord.Interaction, member: discord.Member):
         static_id, name_irl, join_date_str = info
 
     rank_name = "Нет ранга"
-    for role_id, name in ID_TO_RANK_NAME.items():
+    for role_id in RANK_ROLES_ORDERED:
         if discord.utils.get(member.roles, id=role_id):
-            rank_name = name
-            break
+            role = interaction.guild.get_role(role_id)
+            if role:
+                rank_name = role.name
+                break
 
     awards = []
     for award_key, role_id in AWARD_ROLES.items():
@@ -647,7 +668,7 @@ async def passport(interaction: discord.Interaction, member: discord.Member):
     days_in_famq = (datetime.utcnow() - join_datetime).days
     join_date = join_datetime.strftime("%d.%m.%Y") if join_date_str else "Неизвестно"
 
-    status_emoji = get_member_status(member)
+    status_emoji = get_status_emoji(member)
     status_text = "Активен" if member.status != discord.Status.offline else "Не в сети"
 
     async with aiosqlite.connect("dominate_famq.db") as db:
@@ -708,6 +729,28 @@ async def update_passport(interaction: discord.Interaction, static_id: str, name
         await db.commit()
     await interaction.response.send_message("✅ Данные паспорта обновлены!", ephemeral=True)
 
+# =============== НОВАЯ КОМАНДА: ЛСОТВЕТ ===============
+@bot.tree.command(name="лсответ", description="Установить текст для новых участников")
+@app_commands.describe(text="Текст, который будут получать новые участники")
+async def set_welcome_message(interaction: discord.Interaction, text: str):
+    if not discord.utils.get(interaction.user.roles, id=ROLE_APPLICANT_ACCESS):
+        await interaction.response.send_message("❌ У вас нет прав для этой команды.", ephemeral=True)
+        return
+    global WELCOME_MESSAGE
+    WELCOME_MESSAGE = text
+    with open("welcome.txt", "w", encoding="utf-8") as f:
+        f.write(text)
+    await interaction.response.send_message("✅ Текст для новых участников обновлён!", ephemeral=True)
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    global WELCOME_MESSAGE
+    if WELCOME_MESSAGE:
+        try:
+            await member.send(WELCOME_MESSAGE)
+        except discord.Forbidden:
+            pass
+
 # =============== АНОНСЫ ===============
 async def send_announcement_notification(channel_id, content, title):
     channel = bot.get_channel(channel_id)
@@ -717,7 +760,13 @@ async def send_announcement_notification(channel_id, content, title):
     guild = channel.guild
     mentioned_roles = []
     for rank_name in ["main 3 rang", "recruit 4 rang", "high rank 5 rang", "dep leader 6 rang", "owner 7 rang", "leader 8 rang"]:
-        role_id = RANK_NAME_TO_ID.get(rank_name)
+        # Найдём ID по имени
+        role_id = None
+        for rid in RANK_ROLES_ORDERED:
+            r = guild.get_role(rid)
+            if r and r.name.lower() == rank_name:
+                role_id = rid
+                break
         if role_id:
             role = guild.get_role(role_id)
             if role:
@@ -732,6 +781,9 @@ async def send_announcement_notification(channel_id, content, title):
         pass
 
 async def schedule_announcement(ann_id, channel_id, event_time, content):
+    global ANNOUNCEMENT_TASKS
+    if 'ANNOUNCEMENT_TASKS' not in globals():
+        ANNOUNCEMENT_TASKS = {}
     if ann_id in ANNOUNCEMENT_TASKS:
         for task in ANNOUNCEMENT_TASKS[ann_id]:
             task.cancel()
@@ -759,7 +811,7 @@ async def schedule_announcement(ann_id, channel_id, event_time, content):
     content="Текст анонса"
 )
 async def announce(interaction: discord.Interaction, channel: discord.TextChannel, datetime_str: str, content: str):
-    if not has_any_role(interaction.user, CONFIRMATION_ROLES):
+    if not has_any_role(interaction.user, COMPOSITION_ACCESS_ROLES):
         await interaction.response.send_message("❌ Только лидерство может создавать анонсы.", ephemeral=True)
         return
 
@@ -788,10 +840,13 @@ async def announce(interaction: discord.Interaction, channel: discord.TextChanne
 @bot.tree.command(name="анонс_отмена", description="Отменить анонс по ID")
 @app_commands.describe(announcement_id="ID анонса")
 async def cancel_announcement(interaction: discord.Interaction, announcement_id: int):
-    if not has_any_role(interaction.user, CONFIRMATION_ROLES):
+    if not has_any_role(interaction.user, COMPOSITION_ACCESS_ROLES):
         await interaction.response.send_message("❌ Только лидерство может отменять анонсы.", ephemeral=True)
         return
 
+    global ANNOUNCEMENT_TASKS
+    if 'ANNOUNCEMENT_TASKS' not in globals():
+        ANNOUNCEMENT_TASKS = {}
     if announcement_id in ANNOUNCEMENT_TASKS:
         for task in ANNOUNCEMENT_TASKS[announcement_id]:
             task.cancel()
@@ -813,18 +868,17 @@ async def sync_commands(interaction: discord.Interaction):
     await interaction.response.send_message("✅ Команды синхронизированы!", ephemeral=True)
 
 # =============== АВТОМАТИЗАЦИЯ ===============
-STATUSES = [
-    "на Majestic RolePlay",
-    "каптик",
-    "кадровый аудит",
-    "дрочу на масончика"
-]
-
 async def change_status():
     await bot.wait_until_ready()
     while not bot.is_closed():
-        for status in STATUSES:
-            await bot.change_presence(activity=discord.Game(name=status))
+        activities = [
+            discord.Activity(type=discord.ActivityType.playing, name="на Majestic RolePlay"),
+            discord.Activity(type=discord.ActivityType.playing, name="важными делами"),
+            discord.Activity(type=discord.ActivityType.playing, name="капты"),
+            discord.Activity(type=discord.ActivityType.playing, name="арену в 3 кд")
+        ]
+        for activity in activities:
+            await bot.change_presence(activity=activity)
             await asyncio.sleep(30)
 
 async def weekly_report_task():
@@ -850,6 +904,7 @@ async def weekly_report_task():
                 cursor = await db.execute("SELECT COUNT(*) FROM applications WHERE timestamp > ?", (week_ago,))
                 apps = (await cursor.fetchone())[0]
 
+            REPORT_CHANNEL_ID = 1452532989090332724
             channel = bot.get_channel(REPORT_CHANNEL_ID)
             if channel:
                 embed = discord.Embed(
@@ -868,17 +923,16 @@ async def weekly_report_task():
 
 @bot.event
 async def on_ready():
-    global TASKS_STARTED
+    global TASKS_STARTED, WELCOME_MESSAGE
     if TASKS_STARTED:
         return
     init_db()
     print(f'✅ {bot.user} запущен!')
     TASKS_STARTED = True
 
-    if os.path.exists("faq.txt"):
-        global FAQ_MESSAGE_CONTENT
-        with open("faq.txt", "r", encoding="utf-8") as f:
-            FAQ_MESSAGE_CONTENT = f.read()
+    if os.path.exists("welcome.txt"):
+        with open("welcome.txt", "r", encoding="utf-8") as f:
+            WELCOME_MESSAGE = f.read()
 
     bot.loop.create_task(change_status())
     bot.loop.create_task(weekly_report_task())
