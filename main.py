@@ -387,7 +387,12 @@ def high_rank_check():
 
 @bot.tree.command(name="набор", description="Отправить форму набора")
 @app_commands.describe(channel_id="ID канала, куда будут приходить заявки")
-async def recruitment(interaction: discord.Interaction, channel_id: str):
+@bot.tree.command(name="набор", description="Отправить форму набора")
+@app_commands.describe(channel="Канал, куда будут приходить заявки")
+async def recruitment(interaction: discord.Interaction, channel: discord.TextChannel):
+    # Теперь channel — это объект канала, channel.id — его ID
+    ...
+    view = ApplicationButtons(channel.id)
     if not discord.utils.get(interaction.user.roles, id=ROLE_APPLICANT_ACCESS):
         await interaction.response.send_message("❌ У вас нет роли для этой команды.", ephemeral=True)
         return
@@ -899,10 +904,17 @@ async def weekly_report_task():
         except Exception as e:
             print(f"Weekly report error: {e}")
 
+TASKS_STARTED = False
+
 @bot.event
 async def on_ready():
+    global TASKS_STARTED
+    if TASKS_STARTED:
+        return
     init_db()
     print(f'✅ {bot.user} запущен!')
+    TASKS_STARTED = True
+    # ... запуск задач
 
     # Загрузка активных анонсов
     try:
